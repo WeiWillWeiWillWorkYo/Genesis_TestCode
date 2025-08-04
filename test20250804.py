@@ -3,41 +3,56 @@ import genesis as gs
 import math
 import time
 
-# GenesisのバージョンとCouplerOptionsの可用性をチェック
-print("🔍 Genesis環境をチェック中...")
-print(f"Genesisバージョン: {getattr(gs, '__version__', '不明')}")
+# Check Genesis environment
+print("🔍 Checking Genesis environment...")
+print(f"Genesis version: {getattr(gs, '__version__', 'Unknown')}")
 
-# CouplerOptionsが利用可能かチェック
+# Check CouplerOptions availability
 coupler_available = False
 try:
-    # 異なる可能性のあるパスを試す
+    # Try different possible paths
     if hasattr(gs.options, 'CouplerOptions'):
         coupler_available = True
-        print("✓ CouplerOptionsがgs.optionsで利用可能")
+        print("✓ CouplerOptions available in gs.options")
     elif hasattr(gs.options, 'solvers') and hasattr(gs.options.solvers, 'CouplerOptions'):
         coupler_available = True
-        print("✓ CouplerOptionsがgs.options.solversで利用可能")
+        print("✓ CouplerOptions available in gs.options.solvers")
     else:
-        print("⚠️ CouplerOptionsが利用不可、デフォルトの結合設定を使用")
-        print("   (これはシミュレーション結果に影響を与えず、Genesisはデフォルトでソルバー間の結合を有効化)")
+        print("⚠️ CouplerOptions not available, using default coupling")
+        print("   (This won't affect simulation, Genesis enables solver coupling by default)")
 except Exception as e:
-    print(f"⚠️ CouplerOptionsのチェック中にエラー: {e}")
+    print(f"⚠️ Error checking CouplerOptions: {e}")
 
-########################## 初期化 ##########################
+# Check MPM-PBD coupling availability
+coupler_available = False
+try:
+    # Check LegacyCouplerOptions and MPM-PBD coupling
+    if hasattr(gs.options, 'solvers') and hasattr(gs.options.solvers, 'LegacyCouplerOptions'):
+        coupler_available = True
+        print("✓ LegacyCouplerOptions available in gs.options.solvers")
+        print("✓ Enable MPM-PBD coupling for fluid-cloth interaction")
+        print("✓ Removed ineffective side emitter, focus on single powerful impact")
+    else:
+        print("⚠️ LegacyCouplerOptions not available, using default coupling")
+        print("   MPM-PBD interaction may be limited")
+except Exception as e:
+    print(f"⚠️ Error checking coupling options: {e}")
+
+########################## Initialization ##########################
 gs.init(seed=0, precision='32', logging_level='info')
 
-######################## シーンの作成 ##########################
+######################## Scene Creation ##########################
 dt = 4e-3
 scene = gs.Scene(
     sim_options=gs.options.SimOptions(
         dt=dt,
         substeps=10,
     ),
-    # 問題のあるFEMスキームの代わりにMPM-PBD結合を使用
+    # Use MPM-PBD coupling instead of problematic FEM approach
     coupler_options=gs.options.solvers.LegacyCouplerOptions(
-        rigid_sph=True,    # 剛体-SPH結合を有効化（小球の相互作用）
-        mpm_pbd=True,      # MPM-PBD結合を有効化（流体と布の相互作用）
-        rigid_pbd=True,    # 剛体-PBD結合を有効化（地面と布の相互作用）
+        rigid_sph=True,    # Enable rigid-SPH coupling (sphere interaction)
+        mpm_pbd=True,      # Enable MPM-PBD coupling (fluid-cloth interaction)
+        rigid_pbd=True,    # Enable rigid-PBD coupling (ground-cloth interaction)
     ),
     viewer_options=gs.options.ViewerOptions(
         camera_pos=(2.5, 1.5, 1.2), 
@@ -52,12 +67,12 @@ scene = gs.Scene(
     ),
     sph_options=gs.options.SPHOptions(
         dt=dt,
-        lower_bound=(-2.5, -2.5, -0.5),  # より大きな水流に対応するため境界を拡大
+        lower_bound=(-2.5, -2.5, -0.5),  # Expand boundaries for larger fluid flow
         upper_bound=(2.5, 2.5, 2.5),
-        particle_size=0.015,  # 粒子サイズをさらに大きくし、明確な相互作用を確保
+        particle_size=0.015,  # Further increase particle size for obvious interaction
         gravity=(0, 0, -9.8),
     ),
-    # PBDとの結合をサポートするためにMPMオプションを追加
+    # Add MPM options to support coupling with PBD
     mpm_options=gs.options.MPMOptions(
         dt=dt,
         lower_bound=(-2.5, -2.5, -0.5),
@@ -75,8 +90,8 @@ scene = gs.Scene(
     show_viewer=False,
 )
 
-########################## エンティティ ##########################
-# 地面
+########################## Entity Setup ##########################
+# Ground
 ground = scene.add_entity(
     morph=gs.morphs.Plane(),
     material=gs.materials.Rigid(),
@@ -86,46 +101,34 @@ ground = scene.add_entity(
     )
 )
 
-# 布 - 四面体化の問題を避けるためPBD材質にフォールバック
+# Cloth - using PBD material to avoid mesh compatibility issues
 cloth = scene.add_entity(
-    material=gs.materials.PBD.Cloth(),  # PBDにフォールバック
+    material=gs.materials.PBD.Cloth(),  # Back to PBD
     morph=gs.morphs.Mesh(
         file='meshes/cloth.obj',
-        scale=2.2,  # 布を少し大きくする
-        pos=(0, 0, 0.6),  # 布の高さを上げる
+        scale=2.2,  # Slightly larger cloth
+        pos=(0, 0, 0.6),  # Raise cloth height
         euler=(0.0, 0, 0.0),
     ),
     surface=gs.surfaces.Default(
-        color=(0.8, 0.3, 0.3, 0.9),  # 赤い半透明で観察しやすく
+        color=(0.8, 0.3, 0.3, 0.9),  # Red semi-transparent for better observation
         vis_mode='visual',
     )
 )
 
-# 中央液体エミッター - PBD布との結合をサポートするためMPM流体に変更
+# Central liquid emitter - focus on effective cloth impact
 liquid_emitter_center = scene.add_emitter(
     material=gs.materials.MPM.Liquid(
-        sampler='regular',  # 一貫性を確保するために規則的なサンプリングを使用
+        sampler='regular',  # Use regular sampling for consistency
     ),
-    max_particles=4000,  # 粒子数を増やす
+    max_particles=5000,  # More particles focused on single powerful impact
     surface=gs.surfaces.Default(
         color=(0.2, 0.7, 1.0, 0.8),
         vis_mode='particle',
     ),
 )
 
-# 側面エミッター - 同様にMPM流体に変更
-liquid_emitter_side = scene.add_emitter(
-    material=gs.materials.MPM.Liquid(
-        sampler='regular',
-    ),
-    max_particles=3000,
-    surface=gs.surfaces.Default(
-        color=(0.1, 1.0, 0.3, 0.8),  # 緑色の液体
-        vis_mode='particle',
-    ),
-)
-
-# 液体相互作用を検証するための参照小球を追加
+# Reference sphere to verify liquid interaction
 reference_sphere = scene.add_entity(
     material=gs.materials.Rigid(),
     morph=gs.morphs.Sphere(
@@ -133,163 +136,117 @@ reference_sphere = scene.add_entity(
         pos=(0.3, 0.3, 0.3),
     ),
     surface=gs.surfaces.Default(
-        color=(1.0, 0.8, 0.2, 1.0),  # 金色
+        color=(1.0, 0.8, 0.2, 1.0),  # Golden color
         vis_mode='visual',
     )
 )
 
-# カメラ
+# Camera
 cam = scene.add_camera(
     res=(1280, 720),
-    pos=(2.5, 2.0, 1.0),  # カメラ位置を調整してより良い視点を得る
+    pos=(2.5, 2.0, 1.0),  # Adjust camera position for better view
     lookat=(0.0, 0.0, 0.6),
     fov=40,
     GUI=False,
 )
 
-########################## ビルド ##########################
+########################## Build ##########################
 scene.build()
 
-########################## 実行 ##########################
+########################## Execution ##########################
 scene.reset()
 
-########################## PBD布の固定 ##########################
-print("PBD布の制約を設定中...")
-# 元のPBD布の固定方法に戻る
+########################## PBD Cloth Constraints ##########################
+print("Setting PBD cloth constraints...")
+# Back to original PBD cloth fixing method
 corners = [
-    (-1.1, -1.1, 0.6),  # 左下角
-    (1.1, 1.1, 0.6),    # 右上角
-    (-1.1, 1.1, 0.6),   # 左上角
-    (1.1, -1.1, 0.6),   # 右下角
+    (-1.1, -1.1, 0.6),  # Bottom-left corner
+    (1.1, 1.1, 0.6),    # Top-right corner
+    (-1.1, 1.1, 0.6),   # Top-left corner
+    (1.1, -1.1, 0.6),   # Bottom-right corner
 ]
 
 for corner in corners:
     particle_id = cloth.find_closest_particle(corner)
     if particle_id is not None:
         cloth.fix_particle(0, particle_id)
-        print(f"粒子 {particle_id} を位置 {corner} に固定")
+        print(f"Fixed particle {particle_id} at position {corner}")
 
-print("PBD布の制約設定完了")
+print("PBD cloth constraints setup completed")
 
-########################## 強化エミッション制御システム ##########################
+########################## Enhanced Emission Control System ##########################
 class EnhancedEmissionController:
     def __init__(self):
         self.phase = 0
         self.center_counter = 0
-        self.side_counter = 0
-        self.max_center_emissions = 400  # 発射回数を増やす
-        self.max_side_emissions = 300
+        self.max_center_emissions = 500  # All particles focused on central impact
         
     def update_phase(self, frame):
-        """よりスマートなフェーズ制御"""
-        if frame < 150:
-            self.phase = 0  # 中央衝撃の準備
-        elif frame < 450:
-            self.phase = 1  # 中央の強力な衝撃
-        elif frame < 700:
-            self.phase = 2  # 側面の補足衝撃
+        """Smart phase control"""
+        if frame < 200:
+            self.phase = 0  # Warm-up phase
+        elif frame < 600:
+            self.phase = 1  # Powerful impact phase
+        elif frame < 900:
+            self.phase = 2  # Sustained impact phase
         else:
-            self.phase = 3  # 混合衝撃モード
+            self.phase = 3  # Finishing phase
             
     def should_emit_center(self, frame):
-        """中央エミッター制御 - 頻度を上げる"""
+        """Central emitter control - focus on effective impact"""
         if self.center_counter >= self.max_center_emissions:
             return False
             
         if self.phase == 0:
-            return frame % 6 == 0   # 予熱を早く
+            return frame % 4 == 0   # Faster warm-up
         elif self.phase == 1:
-            return frame % 2 == 0   # 主衝撃は非常に密集
+            return frame % 2 == 0   # Very dense main impact
         elif self.phase == 2:
-            return frame % 10 == 0  # 側面フェーズでは減少
+            return frame % 3 == 0   # Sustained impact
         else:
-            return frame % 5 == 0   # 混合モードは中程度の頻度
-            
-    def should_emit_side(self, frame):
-        """側面エミッター制御 - 布の中心を確実に狙う"""
-        if self.side_counter >= self.max_side_emissions:
-            return False
-            
-        if self.phase <= 1:
-            return False
-        elif self.phase == 2:
-            return frame % 3 == 0   # 側面の主攻撃フェーズ
-        else:
-            return frame % 6 == 0   # 混合モード
+            return frame % 8 == 0   # Sparse finishing
             
     def get_center_emission_params(self, frame):
-        """中央エミッターのパラメータ - 衝撃力を最適化"""
-        base_speed = 2.0  # 基礎速度を増やす
-        base_size = 0.035  # 液滴サイズを大きくする
+        """Central emitter parameters - optimize single impact effect"""
+        base_speed = 2.2  # Enhanced speed
+        base_size = 0.04   # Larger droplet size
         
         if self.phase == 0:
             speed_mult = 0.8
             size_mult = 0.9
         elif self.phase == 1:
-            # 主衝撃フェーズの波動効果
-            speed_mult = 1.0 + 0.4 * math.sin(frame * 0.08)
-            size_mult = 1.0 + 0.3 * math.cos(frame * 0.12)
-        else:
-            speed_mult = 1.0
+            # Strong fluctuation effects in main impact phase
+            speed_mult = 1.0 + 0.5 * math.sin(frame * 0.08)
+            size_mult = 1.0 + 0.4 * math.cos(frame * 0.12)
+        elif self.phase == 2:
+            speed_mult = 1.0 + 0.2 * math.sin(frame * 0.05)
             size_mult = 1.0
+        else:
+            speed_mult = 0.6  # Weakened finishing
+            size_mult = 0.8
             
         return {
             "speed": base_speed * speed_mult,
             "droplet_size": base_size * size_mult,
-            "pos": (0.0, 0.0, 1.4),  # 発射高さを少し上げる
+            "pos": (0.0, 0.0, 1.4),
             "direction": (0, 0, -1.0),
         }
-        
-    def get_side_emission_params(self, frame):
-        """側面エミッターのパラメータ - 布の中心を狙う"""
-        base_speed = 1.8
-        base_size = 0.03
-        
-        # 動的な角度、布の異なる部位を狙う
-        angle_offset = math.sin(frame * 0.05) * 0.6  # 揺動角度
-        target_x = 0.3 * math.sin(frame * 0.03)      # 目標X座標の変化
-        target_y = 0.0                               # 目標Y座標
-        target_z = 0.6                               # 布の高さ
-        
-        # 発射位置
-        emit_x = 1.2
-        emit_y = 0.5 * math.cos(frame * 0.04)  # Y位置も少し変化
-        emit_z = 1.0
-        
-        # 方向ベクトルを計算（発射点から目標点へ）
-        dx = target_x - emit_x
-        dy = target_y - emit_y  
-        dz = target_z - emit_z
-        
-        # 方向ベクトルを正規化
-        length = math.sqrt(dx*dx + dy*dy + dz*dz)
-        if length > 0:
-            dx /= length
-            dy /= length
-            dz /= length
-        
-        return {
-            "speed": base_speed,
-            "droplet_size": base_size,
-            "pos": (emit_x, emit_y, emit_z),
-            "direction": (dx, dy, dz),
-        }
 
-# 強化コントローラの作成
+# Create enhanced controller
 controller = EnhancedEmissionController()
 
-# 録画開始
-print("録画開始...")
+# Start recording
+print("Starting video recording...")
 cam.start_recording()
 
-print("強化シミュレーション開始...")
+print("Starting enhanced simulation...")
 start_time = time.time()
 
-# 主シミュレーションループ
-for i in range(1200):  # シミュレーション時間を延長
+# Main simulation loop
+for i in range(1200):  # Extended simulation time
     controller.update_phase(i)
     
-    # 中央エミッター - 衝撃を強化
+    # Focus on central emitter's powerful impact
     if controller.should_emit_center(i):
         try:
             params = controller.get_center_emission_params(i)
@@ -300,69 +257,48 @@ for i in range(1200):  # シミュレーション時間を延長
                 direction=params["direction"],
                 theta=0.0,
                 speed=params["speed"],
-                p_size=0.015,  # 粒子設定と一致させる
+                p_size=0.015,  # Keep consistent with particle settings
             )
             controller.center_counter += 1
         except Exception as e:
             if i % 100 == 0:
-                print(f"中央エミッターエラー (フレーム {i}): {e}")
-    
-    # 側面エミッター - 布を狙う
-    if controller.should_emit_side(i):
-        try:
-            params = controller.get_side_emission_params(i)
-            liquid_emitter_side.emit(
-                droplet_shape="circle",
-                droplet_size=params["droplet_size"],
-                pos=params["pos"],
-                direction=params["direction"],
-                theta=0.0,
-                speed=params["speed"],
-                p_size=0.015,
-            )
-            controller.side_counter += 1
-        except Exception as e:
-            if i % 100 == 0:
-                print(f"側面エミッターエラー (フレーム {i}): {e}")
+                print(f"Central emitter error (frame {i}): {e}")
 
-    # 物理ステップ
+    # Physics step
     scene.step()
     cam.render()
     
-    # 詳細な進捗レポート
+    # Simplified progress report
     if i % 150 == 0:
         elapsed = time.time() - start_time
         fps = (i + 1) / elapsed if elapsed > 0 else 0
-        print(f"進行状況: {i}/1200 | フェーズ: {controller.phase} | "
-              f"中央: {controller.center_counter}/{controller.max_center_emissions} | "
-              f"側面: {controller.side_counter}/{controller.max_side_emissions} | "
+        print(f"Progress: {i}/1200 | Phase: {controller.phase} | "
+              f"Emissions: {controller.center_counter}/{controller.max_center_emissions} | "
               f"FPS: {fps:.1f}")
 
-# 完了統計
+# Complete statistics
 total_time = time.time() - start_time
-print("録画停止、動画を保存...")
+print("Stopping recording and saving video...")
 cam.stop_recording(save_to_filename="enhanced_fluid_cloth_interaction.mp4", fps=60)
 
-print(f"\n=== MPM流体-PBD布結合シミュレーション完了 ===")
-print(f"総実行時間: {total_time:.2f} 秒")
-print(f"平均FPS: {1200/total_time:.1f}")
-print(f"中央発射回数: {controller.center_counter}")
-print(f"側面発射回数: {controller.side_counter}")
-print(f"総粒子発射数: {controller.center_counter + controller.side_counter}")
-print(f"動画保存: enhanced_fluid_cloth_interaction.mp4")
-print(f"\n改善点:")
-print(f"✅ MPM流体+PBD布の信頼性のある結合を採用")
-print(f"✅ FEM四面体化のメッシュ互換性問題を回避")
-print(f"✅ mpm_pbd結合を有効化して本物の流体-布相互作用を確保")
-print(f"✅ 元のすべての最適化パラメータを維持")
-print(f"✅ 安定したPBD布の制約方法に戻る")
-print(f"✅ 正確な側面照準と動的な発射制御")
+print(f"\n=== Focused Central Impact MPM-PBD Simulation Complete ===")
+print(f"Total execution time: {total_time:.2f} seconds")
+print(f"Average FPS: {1200/total_time:.1f}")
+print(f"Total emissions: {controller.center_counter}")
+print(f"Emission efficiency: {controller.center_counter}/{controller.max_center_emissions} ({100*controller.center_counter/controller.max_center_emissions:.1f}%)")
+print(f"Video saved: enhanced_fluid_cloth_interaction.mp4")
+print(f"\nImprovements:")
+print(f"✅ Focus on single powerful central impact effect")
+print(f"✅ Increased particle count (5000) and emission frequency")
+print(f"✅ MPM-PBD coupling ensures realistic interaction")
+print(f"✅ Enhanced speed (2.2) and droplet size (0.04)")
+print(f"✅ Four-phase dynamic emission control")
 
-# Genesisのバージョン情報をチェック
+# Check Genesis version information
 try:
     import genesis as gs
-    print(f"\n🔍 デバッグ情報:")
-    print(f"Genesisバージョン: {gs.__version__ if hasattr(gs, '__version__') else '不明'}")
-    print(f"Genesisインストールパス: {gs.__file__ if hasattr(gs, '__file__') else '不明'}")
+    print(f"\n🔍 Debug information:")
+    print(f"Genesis version: {gs.__version__ if hasattr(gs, '__version__') else 'Unknown'}")
+    print(f"Genesis installation path: {gs.__file__ if hasattr(gs, '__file__') else 'Unknown'}")
 except Exception as e:
-    print(f"Genesisのバージョン情報を取得できません: {e}")
+    print(f"Cannot get Genesis version info: {e}")
