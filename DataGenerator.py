@@ -120,66 +120,64 @@ def to_Nx3(a):
 
 
 # ============================ export helpers ============================
-
 def pack_and_save_gns(episodes, out_dir, T_target=None, dt=0.004, connectivity_radius=0.02):
-    """
-    episodes: list of dict with keys:
-      'pos' : np.array (T, Nfluid, 3)
-      'B'   : np.array (Nb, 3)
-    Exports:
-      out_dir/train.npz  (data key: array of (positions, particle_types, N_total))
-      and metadata.json
-    """
     ensure_dir(out_dir)
-    # clamp lengths to T_target if provided; otherwise to shortest
     if T_target is None:
         T_target = min(ep["pos"].shape[0] for ep in episodes)
+
+    # 先整理样本 (positions, particle_types)
     samples = []
     for ep in episodes:
-        posF = ep["pos"][:T_target].astype(np.float32)  # (T,Nf,3)
-        B = ep["B"].astype(np.float32)                 # (Nb,3)
-        T, Nf, _ = posF.shape
+        posF = ep["pos"][:T_target].astype(np.float32)   # (T, Nf, 3)
+        B = ep["B"].astype(np.float32)                  # (Nb, 3)
+        T_len, Nf, _ = posF.shape
         Nb = B.shape[0]
-        posB = np.broadcast_to(B[None,...], (T, Nb, 3))
+        posB = np.broadcast_to(B[None, ...], (T_len, Nb, 3))
         pos_all = np.concatenate([posF, posB], axis=1)  # (T, Nf+Nb, 3)
-        N_total = Nf + Nb
+        N_total = pos_all.shape[1]
         ptypes = np.zeros((N_total,), dtype=np.int64)
-        ptypes[Nf:] = 3  # kinematic boundary id used by GNS
-        samples.append((pos_all, ptypes, int(N_total)))
-    # save as data key to match your gns loader
-    np.savez_compressed(os.path.join(out_dir, "train.npz"), data=np.array(samples, dtype=object))
-    # also duplicate for valid/test as placeholders
-    for split in ["valid", "test"]:
-        dst = os.path.join(out_dir, f"{split}.npz")
-        if os.path.exists(dst):
-            os.remove(dst)
-        # portable copy without shell
-        with open(os.path.join(out_dir, "train.npz"), "rb") as src, open(dst, "wb") as dstf:
-            dstf.write(src.read())
-    # metadata
-    # compute stats across episodes
+        ptypes[Nf:] = 3  # 边界=3
+        samples.append((pos_all, ptypes))
+
+    # === 核心修改：按 WaterDropSample 的“多键二元样本”格式写 ===
+    def _write_split(npz_path):
+        out = {}
+        for i, (pos_all, ptypes) in enumerate(samples):
+            arr = np.empty(2, dtype=object)
+            arr[0] = pos_all.astype(np.float32)   # (T, N, 3)
+            arr[1] = ptypes.astype(np.int64)      # (N,)
+            out[f"simulation_trajectory_{i}"] = arr
+        np.savez_compressed(npz_path, **out)
+
+    _write_split(os.path.join(out_dir, "train.npz"))
+    _write_split(os.path.join(out_dir, "valid.npz"))
+    _write_split(os.path.join(out_dir, "test.npz"))
+
+    # ---- 统计 & metadata（保持原逻辑）----
     vel_means, vel_stds, acc_means, acc_stds = [], [], [], []
     for ep in episodes:
-        posF = ep["pos"][:T_target].astype(np.float32)
-        if posF.shape[0] >= 2:
+        posF = ep["pos"][:T_target].astype(np.float32)  # (T, Nf, 3)
+        T_len = posF.shape[0]
+        if T_len >= 2:
             v = (posF[1:] - posF[:-1]) / dt
-            vel_means.append(v.reshape(-1,3).mean(axis=0))
-            vel_stds.append(v.reshape(-1,3).std(axis=0))
-        if posF.shape[0] >= 3:
-            a = ( (posF[2:] - posF[1:]) / dt - (posF[1:] - posF[:-1]) / dt ) / dt
-            acc_means.append(a.reshape(-1,3).mean(axis=0))
-            acc_stds.append(a.reshape(-1,3).std(axis=0))
+            vel_means.append(v.reshape(-1, 3).mean(axis=0))
+            vel_stds.append(v.reshape(-1, 3).std(axis=0))
+        if T_len >= 3:
+            a = (v[1:] - v[:-1]) / dt
+            acc_means.append(a.reshape(-1, 3).mean(axis=0))
+            acc_stds.append(a.reshape(-1, 3).std(axis=0))
+
     if vel_means:
         vm = np.mean(np.stack(vel_means), axis=0).tolist()
         vs = np.mean(np.stack(vel_stds), axis=0).tolist()
     else:
-        vm = [0.0,0.0,0.0]; vs = [1.0,1.0,1.0]
+        vm = [0.0, 0.0, 0.0]; vs = [1.0, 1.0, 1.0]
     if acc_means:
         am = np.mean(np.stack(acc_means), axis=0).tolist()
         asd = np.mean(np.stack(acc_stds), axis=0).tolist()
     else:
-        am=[0.0,0.0,0.0]; asd=[1.0,1.0,1.0]
-    # bounds = envelope of particles:
+        am = [0.0, 0.0, 0.0]; asd = [1.0, 1.0, 1.0]
+
     all_positions = np.concatenate([ep["pos"][:T_target].reshape(-1,3) for ep in episodes], axis=0)
     mins = all_positions.min(axis=0).tolist()
     maxs = all_positions.max(axis=0).tolist()
@@ -189,16 +187,14 @@ def pack_and_save_gns(episodes, out_dir, T_target=None, dt=0.004, connectivity_r
                    [float(mins[2]), float(maxs[2])]],
         "sequence_length": int(T_target),
         "default_connectivity_radius": float(connectivity_radius),
-        "dim": 3,
+        "dim": 3,  # 你是 3D，保持 3；若改成 2D 就写 2
         "dt": float(dt),
-        "vel_mean": vm,
-        "vel_std": vs,
-        "acc_mean": am,
-        "acc_std": asd
+        "vel_mean": vm, "vel_std": vs, "acc_mean": am, "acc_std": asd
     }
     with open(os.path.join(out_dir, "metadata.json"), "w") as f:
         json.dump(meta, f, indent=2)
     print(f"[GNS export] written train/valid/test npz and metadata.json to {out_dir}")
+
 
 
 # ============================ defaults / main ============================
