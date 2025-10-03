@@ -123,3 +123,26 @@ for i in range(1000):
 print("録画を停止して動画を保存中...")
 cam.stop_recording(save_to_filename="水流布料シミュレーション.mp4", fps=60)
 print("動画を '水流布料シミュレーション.mp4' として保存完了")
+
+
+python -m gns.train \
+  --data_path="/home/cui_wei/Genesis/dataset_gns/" \
+  --model_path="/home/cui_wei/Genesis/models/gns_model_newstack" \
+  --ntraining_steps=100
+
+
+
+python3 -m gns.train \
+  --mode="rollout" \
+  --data_path="/home/cui_wei/Genesis/dataset_gns/" \
+  --model_path="/home/cui_wei/Genesis/models/" \
+  --output_path="/home/cui_wei/Genesis/rollout/gns_model_newstack-100/" \
+  --model_file="gns_model_newstackmodel-100.pt" \
+  --train_state_file="gns_model_newstacktrain_state-100.pt"
+
+
+python3 -m gns.render_rollout \
+  --output_mode="gif" \
+  --rollout_dir="/home/cui_wei/Genesis/rollout/gns_model_newstack-100/" \
+  --rollout_name="rollout_ex0"
+
